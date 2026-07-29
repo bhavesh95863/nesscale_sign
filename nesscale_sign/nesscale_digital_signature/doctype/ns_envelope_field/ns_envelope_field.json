@@ -17,6 +17,8 @@
   "filled",
   "sec_pos",
   "page",
+  "placement",
+  "anchor_text",
   "pos_x",
   "pos_y",
   "col2",
@@ -105,6 +107,22 @@
    "fieldtype": "Int",
    "label": "Page",
    "default": "1"
+  },
+  {
+   "fieldname": "placement",
+   "fieldtype": "Select",
+   "label": "Placement",
+   "options": "Absolute\nLast Page\nAnchor",
+   "default": "Absolute",
+   "read_only": 1,
+   "description": "Copied from the template field; positions are resolved to absolute page coordinates when the envelope is created."
+  },
+  {
+   "fieldname": "anchor_text",
+   "fieldtype": "Data",
+   "label": "Anchor Text",
+   "read_only": 1,
+   "depends_on": "eval:doc.placement=='Anchor'"
   },
   {
    "fieldname": "pos_x",

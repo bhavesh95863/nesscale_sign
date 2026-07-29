@@ -8,13 +8,15 @@ import frappe
 from frappe import _
 from frappe.utils import cint, slug
 
-from nesscale_sign.services import pdf_service
+from nesscale_sign.services import pdf_service, print_service
 from nesscale_sign.utils import files
+from nesscale_sign.utils.constants import PdfSource
 
 # Field attributes copied between template fields, version snapshots and
 # envelope field instances.
 FIELD_ATTRS = [
 	"field_key", "field_type", "label", "signer_role", "page",
+	"placement", "anchor_text",
 	"pos_x", "pos_y", "width", "height", "required", "read_only",
 	"placeholder", "default_value", "options", "font_size", "font_family",
 	"max_length", "validation", "repeat_group", "mapping_key",
@@ -24,6 +26,8 @@ TRIGGER_FIELDS = [
 	"auto_create", "trigger_doctype", "trigger_event", "trigger_auto_send",
 	"trigger_value_field", "trigger_value_to", "trigger_date_field", "trigger_days",
 ]
+
+PRINT_SOURCE_FIELDS = ["pdf_source", "ref_doctype", "print_format", "print_letterhead"]
 
 
 class TemplateService:
@@ -41,9 +45,10 @@ class TemplateService:
 		doc.expiry_days = cint(data.get("expiry_days")) or 30
 		doc.email_subject = data.get("email_subject")
 		doc.email_message = data.get("email_message")
-		for field in TRIGGER_FIELDS:
+		for field in TRIGGER_FIELDS + PRINT_SOURCE_FIELDS:
 			if field in data:
 				doc.set(field, data[field])
+		validate_print_source(doc)
 		validate_trigger(doc)
 		if data.get("pdf_file"):
 			doc.pdf_file = data["pdf_file"]
@@ -74,12 +79,39 @@ class TemplateService:
 		doc.save()
 		return doc
 
-	def page_metrics(self) -> list[dict]:
+	def page_metrics(self, document: str | None = None) -> list[dict]:
 		doc = self._doc()
+		if is_print_source(doc):
+			try:
+				return pdf_service.get_page_metrics(self.render_preview(document))
+			except frappe.DoesNotExistError:
+				return []
 		if not doc.pdf_file:
 			return []
 		content = files.read_file_content(doc.pdf_file)
 		return pdf_service.get_page_metrics(content)
+
+	def render_preview(self, document: str | None = None) -> bytes:
+		"""PDF bytes for the designer preview.
+
+		Static templates return their uploaded PDF. Print-format templates render
+		the given reference document — or the most recently modified one when no
+		document is specified.
+		"""
+		doc = self._doc()
+		if not is_print_source(doc):
+			if not doc.pdf_file:
+				frappe.throw(_("Template has no PDF document."))
+			return files.read_file_content(doc.pdf_file)
+		name = document or frappe.db.get_value(
+			doc.ref_doctype, {}, "name", order_by="modified desc"
+		)
+		if not name:
+			frappe.throw(
+				_("No {0} document exists yet to preview this template.").format(doc.ref_doctype),
+				frappe.DoesNotExistError,
+			)
+		return print_service.render_for_template(doc, doc.ref_doctype, name)
 
 	# ------------------------------------------------------------------ roles
 	def save_roles(self, roles: list[dict]) -> "frappe.Document":
@@ -157,7 +189,9 @@ class TemplateService:
 
 	def publish(self) -> "frappe.Document":
 		doc = self._doc()
-		if not doc.pdf_file:
+		if is_print_source(doc):
+			validate_print_source(doc)
+		elif not doc.pdf_file:
 			frappe.throw(_("Cannot publish a template without a PDF."))
 		if not doc.signer_roles:
 			frappe.throw(_("Add at least one signer role before publishing."))
@@ -220,6 +254,38 @@ def validate_trigger(doc):
 	meta = frappe.get_meta(doc.trigger_doctype)
 	if meta.istable or meta.issingle:
 		frappe.throw(_("Auto-creation requires a normal DocType (not a child table or single)."))
+
+
+def is_print_source(doc) -> bool:
+	return (doc.get("pdf_source") or PdfSource.STATIC) == PdfSource.PRINT_FORMAT
+
+
+def validate_print_source(doc):
+	"""Print-format templates need a valid reference DocType + matching print format."""
+	if not is_print_source(doc):
+		return
+	if not doc.get("ref_doctype"):
+		frappe.throw(_("Select a Reference DocType for the print format source."))
+	meta = frappe.get_meta(doc.ref_doctype)
+	if meta.istable or meta.issingle:
+		frappe.throw(_("The print format source requires a normal DocType (not a child table or single)."))
+	if doc.get("print_format"):
+		pf_doctype = frappe.db.get_value("Print Format", doc.print_format, "doc_type")
+		if pf_doctype and pf_doctype != doc.ref_doctype:
+			frappe.throw(
+				_("Print Format {0} belongs to {1}, not {2}.").format(
+					doc.print_format, pf_doctype, doc.ref_doctype
+				)
+			)
+	if doc.get("auto_create"):
+		# The automation trigger must watch the same DocType the PDF is
+		# rendered from; default it when unset.
+		if not doc.get("trigger_doctype"):
+			doc.trigger_doctype = doc.ref_doctype
+		elif doc.trigger_doctype != doc.ref_doctype:
+			frappe.throw(
+				_("Auto-creation trigger DocType must match the print format's Reference DocType.")
+			)
 
 
 def _apply_field_attrs(row: "frappe.Document", field: dict):

@@ -16,6 +16,8 @@
   "read_only",
   "sec_pos",
   "page",
+  "placement",
+  "anchor_text",
   "pos_x",
   "pos_y",
   "col2",
@@ -99,6 +101,22 @@
    "fieldtype": "Int",
    "label": "Page",
    "default": "1"
+  },
+  {
+   "fieldname": "placement",
+   "fieldtype": "Select",
+   "label": "Placement",
+   "options": "Absolute\nLast Page\nAnchor",
+   "default": "Absolute",
+   "description": "How the field is positioned on generated PDFs. Absolute: fixed page + coordinates. Last Page: coordinates on the final page. Anchor: located at a text marker in the document."
+  },
+  {
+   "fieldname": "anchor_text",
+   "fieldtype": "Data",
+   "label": "Anchor Text",
+   "depends_on": "eval:doc.placement=='Anchor'",
+   "mandatory_depends_on": "eval:doc.placement=='Anchor'",
+   "description": "Marker text placed in the print format HTML, e.g. [[sign:customer]]. It is removed from the sent document."
   },
   {
    "fieldname": "pos_x",

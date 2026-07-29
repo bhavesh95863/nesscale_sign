@@ -13,21 +13,23 @@ import frappe
 from frappe import _
 from frappe.utils import add_to_date, cint, now_datetime
 
-from nesscale_sign.services import pdf_service
+from nesscale_sign.services import pdf_service, print_service
 from nesscale_sign.services.audit_service import AuditService
 from nesscale_sign.services.notification_service import NotificationService
-from nesscale_sign.services.template_service import TemplateService
+from nesscale_sign.services.template_service import TemplateService, is_print_source
 from nesscale_sign.services.workflow_service import WorkflowService
 from nesscale_sign.utils import files
 from nesscale_sign.utils.constants import (
 	DEFAULT_SIGNER_PALETTE,
 	AuditAction,
 	EnvelopeStatus,
+	FieldPlacement,
 	SignerStatus,
 )
 
 ENVELOPE_FIELD_ATTRS = [
 	"field_key", "field_type", "label", "signer_role", "page",
+	"placement", "anchor_text",
 	"pos_x", "pos_y", "width", "height", "required", "read_only",
 	"options", "default_value", "font_size", "font_family", "repeat_group", "mapping_key",
 ]
@@ -44,7 +46,30 @@ class EnvelopeService:
 	@classmethod
 	def create_from_template(cls, template: str, data: dict) -> "frappe.Document":
 		tmpl = frappe.get_doc("NS Template", template)
-		if not tmpl.pdf_file:
+		is_print = is_print_source(tmpl)
+
+		# Optional reference document (for field prefill + reversal linkage);
+		# mandatory when the PDF is generated from its print format.
+		source_doc = _resolve_source_doc(data.get("source_doctype"), data.get("source_name"))
+		template_fields = TemplateService(tmpl.name).get_fields()
+
+		pdf_bytes = anchor_positions = None
+		if is_print:
+			if not source_doc:
+				frappe.throw(
+					_("Template {0} generates its PDF from a {1} document. Pass source_doctype and source_name.").format(
+						tmpl.name, tmpl.ref_doctype
+					)
+				)
+			pdf_bytes = print_service.render_for_template(tmpl, source_doc.doctype, source_doc.name)
+			anchors = {
+				f.get("anchor_text")
+				for f in template_fields
+				if f.get("placement") == FieldPlacement.ANCHOR and f.get("anchor_text")
+			}
+			anchor_positions = pdf_service.find_anchors(pdf_bytes, anchors)
+			pdf_bytes = pdf_service.remove_anchor_text(pdf_bytes, anchors)
+		elif not tmpl.pdf_file:
 			frappe.throw(_("Template has no PDF document."))
 
 		env = frappe.new_doc("NS Envelope")
@@ -53,24 +78,33 @@ class EnvelopeService:
 		env.template = tmpl.name
 		env.template_version = tmpl.current_version
 		env.routing_type = data.get("routing_type") or tmpl.routing_type
-		env.source_pdf = tmpl.pdf_file
-		env.page_count = tmpl.page_count
+		env.source_pdf = None if is_print else tmpl.pdf_file
+		env.page_count = pdf_service.get_page_count(pdf_bytes) if is_print else tmpl.page_count
 		env.email_subject = data.get("email_subject") or tmpl.email_subject
 		env.email_message = data.get("email_message") or tmpl.email_message
 		env.message = data.get("message")
 		cls._apply_signers(env, data.get("signers") or [], tmpl)
 
-		# Optional reference document (for field prefill + reversal linkage).
-		source_doc = _resolve_source_doc(data.get("source_doctype"), data.get("source_name"))
 		if source_doc:
 			env.metadata_json = json.dumps(
 				{"ref_doctype": source_doc.doctype, "ref_name": source_doc.name}
 			)
 		env.insert()
 
+		if is_print:
+			# Each envelope owns its generated source PDF (unlike static
+			# templates, which share the template's file).
+			pdf_file = files.save_private_file(
+				f"{env.name}-source.pdf", pdf_bytes,
+				attached_to_doctype="NS Envelope", attached_to_name=env.name,
+				attached_to_field="source_pdf",
+			)
+			env.db_set("source_pdf", pdf_file.file_url)
+
 		svc = cls(env.name)
-		template_fields = TemplateService(tmpl.name).get_fields()
-		svc._materialise_fields(env, template_fields, source_doc=source_doc)
+		svc._materialise_fields(
+			env, template_fields, source_doc=source_doc, anchor_positions=anchor_positions
+		)
 		AuditService(env.name).log(AuditAction.CREATED, details=f"From template {tmpl.name}")
 		return frappe.get_doc("NS Envelope", env.name)
 
@@ -115,17 +149,19 @@ class EnvelopeService:
 				},
 			)
 
-	def _materialise_fields(self, env, source_fields: list[dict], source_doc=None):
+	def _materialise_fields(self, env, source_fields: list[dict], source_doc=None, anchor_positions=None):
 		"""Snapshot template/inline fields into per-envelope ``NS Envelope Field`` rows.
 
 		Fields carrying a ``mapping_key`` are prefilled (and locked) from the
-		reference document when one is supplied.
+		reference document when one is supplied. Last Page / Anchor placements
+		are resolved to absolute page coordinates against the envelope's PDF.
 		"""
 		role_to_email = {
 			(s.role_key or "").lower(): s.signer_email for s in env.signers if s.role_key
 		}
 		# Fallback: single-signer envelopes bind every field to that signer.
 		default_email = env.signers[0].signer_email if len(env.signers) == 1 else None
+		page_count = cint(env.page_count)
 
 		for field in source_fields:
 			role_key = (field.get("signer_role") or "").lower()
@@ -136,6 +172,7 @@ class EnvelopeService:
 			for attr in ENVELOPE_FIELD_ATTRS:
 				if field.get(attr) is not None:
 					row.set(attr, field.get(attr))
+			_resolve_placement(row, field, anchor_positions or {}, page_count)
 			if not row.field_key:
 				row.field_key = frappe.generate_hash(length=10)
 			if field.get("default_value") and not row.read_only:
@@ -291,6 +328,32 @@ class EnvelopeService:
 
 
 # --------------------------------------------------------------------- helpers
+def _resolve_placement(row, field: dict, anchor_positions: dict, page_count: int):
+	"""Convert Last Page / Anchor placements into absolute page coordinates.
+
+	Anchor fields snap their top-left corner to the marker's position; the
+	designer's box size wins when set, otherwise the marker's own rect is used.
+	A missing marker falls back to the designer coordinates (clamped below).
+	"""
+	placement = field.get("placement") or FieldPlacement.ABSOLUTE
+	if placement == FieldPlacement.ANCHOR:
+		anchor = anchor_positions.get(field.get("anchor_text") or "")
+		if anchor:
+			row.page = anchor["page"]
+			row.pos_x = anchor["pos_x"]
+			row.pos_y = anchor["pos_y"]
+			if not row.width:
+				row.width = anchor["width"]
+			if not row.height:
+				row.height = anchor["height"]
+			return
+	if placement == FieldPlacement.LAST_PAGE and page_count:
+		row.page = page_count
+	elif page_count and cint(row.page) > page_count:
+		# Generated PDFs can be shorter than the designer preview was.
+		row.page = page_count
+
+
 def _default_org() -> str | None:
 	return frappe.db.get_single_value("NS Settings", "default_organization")
 

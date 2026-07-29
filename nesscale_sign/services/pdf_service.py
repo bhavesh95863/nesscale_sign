@@ -52,6 +52,65 @@ def get_page_count(pdf_bytes: bytes) -> int:
 		return doc.page_count
 
 
+def find_anchors(pdf_bytes: bytes, anchor_texts: "set[str] | list[str]") -> dict[str, dict]:
+	"""Locate anchor markers (e.g. ``[[sign:customer]]``) in the document.
+
+	Returns ``{anchor_text: {page, pos_x, pos_y, width, height}}`` with the same
+	normalised top-left coordinate system the designer uses. Only the first
+	occurrence of each anchor is reported.
+	"""
+	anchors = {t for t in anchor_texts if t}
+	results: dict[str, dict] = {}
+	if not anchors:
+		return results
+	with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+		for index, page in enumerate(doc):
+			pending = anchors - results.keys()
+			if not pending:
+				break
+			pw, ph = page.rect.width, page.rect.height
+			for text in pending:
+				hits = page.search_for(text)
+				if hits:
+					r = hits[0]
+					results[text] = {
+						"page": index + 1,
+						"pos_x": r.x0 / pw,
+						"pos_y": r.y0 / ph,
+						"width": (r.x1 - r.x0) / pw,
+						"height": (r.y1 - r.y0) / ph,
+					}
+	return results
+
+
+def remove_anchor_text(pdf_bytes: bytes, anchor_texts: "set[str] | list[str]") -> bytes:
+	"""Redact anchor markers so they never appear in the sent/signed document.
+
+	Redaction (rather than a white overlay) removes the text from the content
+	stream entirely, so it also cannot be recovered by select-and-copy.
+	"""
+	anchors = {t for t in anchor_texts if t}
+	if not anchors:
+		return pdf_bytes
+	doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+	try:
+		dirty = False
+		for page in doc:
+			hit = False
+			for text in anchors:
+				for rect in page.search_for(text):
+					page.add_redact_annot(rect)
+					hit = True
+			if hit:
+				page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+				dirty = True
+		if not dirty:
+			return pdf_bytes
+		return doc.tobytes(garbage=4, deflate=True)
+	finally:
+		doc.close()
+
+
 def _rect_for_field(page, field: dict) -> "fitz.Rect":
 	pw, ph = page.rect.width, page.rect.height
 	x0 = float(field.get("pos_x") or 0) * pw

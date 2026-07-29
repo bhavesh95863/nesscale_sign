@@ -14,14 +14,14 @@ def create_template(data: dict | None = None):
 
 
 @frappe.whitelist()
-def get_template(name: str):
+def get_template(name: str, document: str | None = None):
 	doc = frappe.get_doc("NS Template", name)
 	doc.check_permission("read")
 	svc = TemplateService(name)
 	return {
 		"template": doc.as_dict(),
 		"fields": svc.get_fields(),
-		"page_metrics": svc.page_metrics(),
+		"page_metrics": svc.page_metrics(document),
 	}
 
 
@@ -32,15 +32,32 @@ def update_template(name: str, data=None):
 	data = load(data) or {}
 	for field in ("title", "description", "routing_type", "expiry_days",
 		"email_subject", "email_message", "reminder_enabled", "organization", "tags",
+		"pdf_source", "ref_doctype", "print_format", "print_letterhead",
 		"auto_create", "trigger_doctype", "trigger_event", "trigger_auto_send",
 		"trigger_value_field", "trigger_value_to", "trigger_date_field", "trigger_days"):
 		if field in data:
 			doc.set(field, data[field])
-	from nesscale_sign.services.template_service import validate_trigger
+	from nesscale_sign.services.template_service import validate_print_source, validate_trigger
 
+	validate_print_source(doc)
 	validate_trigger(doc)
 	doc.save()
 	return doc.as_dict()
+
+
+@frappe.whitelist()
+def preview_template_pdf(name: str, document: str | None = None):
+	"""Stream the template's PDF for the designer preview.
+
+	For print-format templates this renders the given reference document (or
+	the most recently modified one) through the configured print format.
+	"""
+	doc = frappe.get_doc("NS Template", name)
+	doc.check_permission("read")
+	content = TemplateService(name).render_preview(document)
+	frappe.local.response.filename = f"{name}-preview.pdf"
+	frappe.local.response.filecontent = content
+	frappe.local.response.type = "pdf"
 
 
 @frappe.whitelist()
@@ -94,7 +111,7 @@ def list_templates(status: str | None = None, search: str | None = None,
 		filters=filters,
 		or_filters=or_filters,
 		fields=["name", "title", "status", "organization", "page_count",
-			"version_count", "routing_type", "modified"],
+			"version_count", "routing_type", "pdf_source", "ref_doctype", "modified"],
 		order_by="modified desc",
 		start=int(start),
 		page_length=int(page_length),
