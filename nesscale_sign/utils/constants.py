@@ -45,6 +45,17 @@ class RoutingType:
 	PARALLEL = "Parallel"
 
 
+class PdfSource:
+	STATIC = "Static PDF"
+	PRINT_FORMAT = "Print Format"
+
+
+class FieldPlacement:
+	ABSOLUTE = "Absolute"
+	LAST_PAGE = "Last Page"
+	ANCHOR = "Anchor"
+
+
 # Field types that require a captured signature artifact rather than text input.
 SIGNATURE_FIELD_TYPES = {"Signature", "Initial", "Stamp"}
 

@@ -20,6 +20,19 @@ def create_adhoc(data: dict | None = None):
 
 
 @frappe.whitelist()
+def create_from_document(template: str, source_doctype: str, source_name: str, data=None):
+	"""Create an envelope from a template against a reference document.
+
+	Convenience wrapper for print-format templates (and static templates that
+	prefill via mapping keys): the PDF is generated from the document's print
+	format and fields are resolved/prefilled from it.
+	"""
+	payload = load(data) or {}
+	payload.update({"source_doctype": source_doctype, "source_name": source_name})
+	return EnvelopeService.create_from_template(template, payload).as_dict()
+
+
+@frappe.whitelist()
 def get_envelope(name: str):
 	doc = frappe.get_doc("NS Envelope", name)
 	doc.check_permission("read")

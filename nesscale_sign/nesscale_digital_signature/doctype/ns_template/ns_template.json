@@ -13,7 +13,11 @@
   "expiry_days",
   "reminder_enabled",
   "sec_pdf",
+  "pdf_source",
   "pdf_file",
+  "ref_doctype",
+  "print_format",
+  "print_letterhead",
   "page_count",
   "col2",
   "current_version",
@@ -89,9 +93,41 @@
    "label": "Document"
   },
   {
+   "fieldname": "pdf_source",
+   "fieldtype": "Select",
+   "label": "PDF Source",
+   "options": "Static PDF\nPrint Format",
+   "default": "Static PDF",
+   "description": "Static PDF: one fixed document uploaded to the template. Print Format: the PDF is generated per envelope from a reference document's print format."
+  },
+  {
    "fieldname": "pdf_file",
    "fieldtype": "Attach",
-   "label": "Pdf File"
+   "label": "Pdf File",
+   "depends_on": "eval:doc.pdf_source!='Print Format'"
+  },
+  {
+   "fieldname": "ref_doctype",
+   "fieldtype": "Link",
+   "label": "Reference DocType",
+   "options": "DocType",
+   "depends_on": "eval:doc.pdf_source=='Print Format'",
+   "mandatory_depends_on": "eval:doc.pdf_source=='Print Format'"
+  },
+  {
+   "fieldname": "print_format",
+   "fieldtype": "Link",
+   "label": "Print Format",
+   "options": "Print Format",
+   "depends_on": "eval:doc.pdf_source=='Print Format'",
+   "description": "Leave empty to use the Standard print format."
+  },
+  {
+   "fieldname": "print_letterhead",
+   "fieldtype": "Link",
+   "label": "Letter Head",
+   "options": "Letter Head",
+   "depends_on": "eval:doc.pdf_source=='Print Format'"
   },
   {
    "fieldname": "page_count",
