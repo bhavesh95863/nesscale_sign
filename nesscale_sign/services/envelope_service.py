@@ -271,7 +271,10 @@ class EnvelopeService:
 		env.status = EnvelopeStatus.COMPLETED
 		env.completed_on = now_datetime()
 		env.recompute_progress()
-		env.save()
+		# finalize() runs in the last signer's request: through the signing link that is Guest
+		# (token-authenticated, like the other saves in SigningService), so the envelope's
+		# has_permission check would refuse "write" and roll the signature back.
+		env.save(ignore_permissions=True)
 
 		AuditService(env.name).log(AuditAction.GENERATED, details="Final signed PDF generated")
 		AuditService(env.name).log(AuditAction.COMPLETED, details="All signers completed")
