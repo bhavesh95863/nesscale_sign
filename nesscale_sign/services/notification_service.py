@@ -10,7 +10,6 @@ can be customised from Desk without code changes. Every send is recorded as an
 """
 
 import frappe
-from frappe.email.doctype.email_template.email_template import get_email_template
 from frappe.utils import format_datetime, get_url, now_datetime
 
 from nesscale_sign.email.seed import TEMPLATE_NAMES
@@ -75,7 +74,13 @@ class NotificationService:
 		"""Render an Email Template, falling back to a minimal body if missing."""
 		template_name = TEMPLATE_NAMES.get(notification_type)
 		try:
-			return get_email_template(template_name, context)
+			# Not frappe's get_email_template(): it checks the current user can read Email
+			# Template, and these mails go out in the signer's request - through the signing
+			# link that is Guest, so the invitation to the next signer and the completion mail
+			# would raise PermissionError and roll the signature back. The template is ours
+			# (TEMPLATE_NAMES), never chosen by the user.
+			template = frappe.get_doc("Email Template", template_name)
+			return template.get_formatted_email(context)
 		except frappe.DoesNotExistError:
 			title = context.get("title") or self.envelope.title
 			return {

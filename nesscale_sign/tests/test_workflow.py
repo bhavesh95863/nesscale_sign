@@ -66,6 +66,40 @@ class TestSequentialWorkflow(FrappeTestCase):
 		self.assertEqual(env.progress, 100)
 
 
+class TestSigningLinkAsGuest(FrappeTestCase):
+	"""Signers on the public signing link are Guest: signing, the next signer's invitation,
+	finalizing and the completion mail must all work without desk permissions."""
+
+	def setUp(self):
+		frappe.set_user("Administrator")
+		self.tmpl = make_template("Guest Seq Tmpl", roles=TWO_ROLES, fields=TWO_FIELDS)
+
+	def tearDown(self):
+		frappe.set_user("Administrator")
+
+	def test_guest_signers_complete_a_sequential_envelope(self):
+		env = make_envelope(self.tmpl.name, two_signers(), routing="Sequential")
+		first_token = env.get_signer("alice@test.com").token
+		second_token = env.get_signer("bob@test.com").token
+
+		frappe.set_user("Guest")
+		result = SigningService(first_token).submit({}, signature_payload())
+		self.assertEqual(result["status"], "signed")
+		result = SigningService(second_token).submit({}, signature_payload())
+		self.assertEqual(result["status"], "completed")
+
+		frappe.set_user("Administrator")
+		env.reload()
+		self.assertEqual(env.status, "Completed")
+		self.assertTrue(env.signed_pdf)
+		self.assertTrue(env.certificate_pdf)
+		sent = frappe.get_all(
+			"NS Notification", filters={"envelope": env.name}, pluck="notification_type"
+		)
+		self.assertIn("Invitation", sent)
+		self.assertIn("Completed", sent)
+
+
 class TestParallelWorkflow(FrappeTestCase):
 	def setUp(self):
 		frappe.set_user("Administrator")
